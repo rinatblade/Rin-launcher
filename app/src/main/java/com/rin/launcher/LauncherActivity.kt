@@ -7,6 +7,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Build
+import android.provider.MediaStore
+import android.content.ContentUris
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import android.graphics.drawable.Drawable
 import android.net.Uri
 import android.os.Bundle
@@ -44,6 +52,8 @@ class LauncherActivity : Activity() {
     private val panels = ArrayList<View>()
     private var receiver: BroadcastReceiver? = null
     private var savedFocus: View? = null
+    private lateinit var clock: ClockView
+    private lateinit var emptyHint: TextView
 
     private var memText: TextView? = null
     private var memBar: BarView? = null
@@ -74,6 +84,7 @@ class LauncherActivity : Activity() {
         root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
 
         buildHome()
+        applyBackground(false)
         setContentView(root)
         registerPackageReceiver()
         reloadApps()
@@ -82,6 +93,7 @@ class LauncherActivity : Activity() {
     override fun onResume() {
         super.onResume()
         bg.setRunning(true)
+        clock.update()
         content.animate().cancel()
         content.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).start()
     }
@@ -159,32 +171,8 @@ class LauncherActivity : Activity() {
     }
 
     private fun buildHome() {
-        val side = Ui.px(96)
-
-        val clock = TextClock(this)
-        clock.format24Hour = "HH:mm"
-        clock.format12Hour = "HH:mm"
-        Style.styled(clock, 96, 1, false, false)
-        val date = TextClock(this)
-        date.format24Hour = "EEEE, d MMMM"
-        date.format12Hour = "EEEE, d MMMM"
-        Style.styled(date, 30, 2, false, false)
-        val head = LinearLayout(this)
-        head.orientation = LinearLayout.VERTICAL
-        head.addView(clock)
-        val dlp = LinearLayout.LayoutParams(-2, -2)
-        dlp.topMargin = Ui.px(6)
-        head.addView(date, dlp)
-        val hlp = FrameLayout.LayoutParams(-2, -2)
-        hlp.leftMargin = side
-        hlp.topMargin = Ui.px(46)
-        content.addView(head, hlp)
-
-        val brand = label(this, "Rin", 34, 3, true)
-        val blp = FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END)
-        blp.rightMargin = side
-        blp.topMargin = Ui.px(62)
-        content.addView(brand, blp)
+        clock = ClockView(this, prefs)
+        content.addView(clock, clockLp())
 
         scroll = ScrollView(this)
         scroll.isVerticalScrollBarEnabled = false
@@ -199,7 +187,13 @@ class LauncherActivity : Activity() {
         slp.bottomMargin = Ui.px(212)
         content.addView(scroll, slp)
 
+        emptyHint = label(this, "На главном экране нет приложений. Откройте «Приложения» в доке и отметьте нужные", 30, 2, false)
+        emptyHint.gravity = Gravity.CENTER
+        emptyHint.visibility = View.GONE
+        content.addView(emptyHint, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+
         buildDock()
+        relayoutClock(false)
     }
 
     private fun buildDock() {
@@ -209,9 +203,11 @@ class LauncherActivity : Activity() {
         dock.setPadding(Ui.px(30), Ui.px(14), Ui.px(30), Ui.px(12))
 
         dock.addView(dockItem(GlyphView.CLEAN, 0xFF34C8A0, 0xFF1E8F8F, null, "Очистка") { openCleaner() }, dockLp())
-        dock.addView(dockItem(GlyphView.BOLT, 0xFFFFB347, 0xFFFF6A3D, null, "Ускорить") { quickBoost() }, dockLp())
+        dock.addView(dockItem(GlyphView.GRID, 0xFFFF7A9C, 0xFFE0446E, null, "Приложения") { openHomeApps() }, dockLp())
+        dock.addView(dockItem(GlyphView.WALL, 0xFF5AC8FA, 0xFF007AFF, null, "Фон") { openBackground() }, dockLp())
         dock.addView(dockItem(GlyphView.THEME, 0xFFB06CFF, 0xFF5B5BFF, null, "Темы") { openThemes() }, dockLp())
         dock.addView(dockItem(GlyphView.TEXT, 0xFF4FA8FF, 0xFF2B63E0, "Аа", "Шрифты") { openFonts() }, dockLp())
+        dock.addView(dockItem(GlyphView.CLOCK, 0xFFFF9F0A, 0xFFFF6A00, null, "Часы") { openClock() }, dockLp())
         dock.addView(dockItem(GlyphView.GEAR, 0xFF9AA3B2, 0xFF5B6475, null, "Настройки") { openSettings() }, dockLp())
 
         val lp = FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
@@ -281,6 +277,7 @@ class LauncherActivity : Activity() {
             i++
         }
         grid.requestLayout()
+        emptyHint.visibility = if (visible.isEmpty() && apps.isNotEmpty()) View.VISIBLE else View.GONE
         if (panels.isEmpty()) {
             scroll.post { focusFirst() }
         }
@@ -290,6 +287,9 @@ class LauncherActivity : Activity() {
         if (panels.isNotEmpty()) return
         if (grid.childCount > 0) {
             grid.getChildAt(0).requestFocus()
+        } else {
+            val f = firstFocusable(content)
+            if (f != null) f.requestFocus()
         }
     }
 
@@ -413,6 +413,10 @@ class LauncherActivity : Activity() {
     private fun popPanel(): Boolean {
         if (panels.isEmpty()) return false
         val p = panels.removeAt(panels.size - 1)
+        if (p is PanelFrame) {
+            val oc = p.onClose
+            if (oc != null) oc()
+        }
         p.animate().alpha(0f).setDuration(160).withEndAction { overlay.removeView(p) }.start()
         if (panels.isEmpty()) {
             content.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
@@ -525,14 +529,20 @@ class LauncherActivity : Activity() {
     private fun applyTheme(t: RinTheme) {
         prefs.themeId = t.id
         Skin.theme = t
-        bg.setTheme(t, prefs.animations)
+        if (prefs.bgMode == 0) {
+            Skin.bgDark = null
+            bg.setTheme(t, prefs.animations)
+        }
         Style.restyle(root)
+        clock.refreshStyle()
     }
 
     private fun applyFont(i: Int) {
         prefs.fontIdx = i
         Skin.typeface = Fonts.load(this, Fonts.all[i])
         Style.restyle(root)
+        clock.refreshStyle()
+        relayoutClock(false)
     }
 
     private fun themeSection(frame: PanelFrame, title: String, list: List<RinTheme>, cells: ArrayList<Pair<String, View>>) {
@@ -981,14 +991,17 @@ class LauncherActivity : Activity() {
         }
         frame.body.addView(animRow.view, rowLp())
 
-        val hid = row(GlyphView.CLEAN, 0xFFB06CFF, 0xFF5B5BFF, null, "Показать скрытые приложения",
-            "Скрыто: " + prefs.hidden.size) { }
-        hid.view.setOnClickListener {
-            prefs.hidden = HashSet<String>()
-            hid.sub?.text = "Скрыто: 0"
-            populateGrid()
-        }
-        frame.body.addView(hid.view, rowLp())
+        val appsRow = row(GlyphView.GRID, 0xFFFF7A9C, 0xFFE0446E, null, "Приложения на главном экране",
+            "Оставить только нужные, остальные скрыть") { openHomeApps() }
+        frame.body.addView(appsRow.view, rowLp())
+
+        val bgRow = row(GlyphView.WALL, 0xFF5AC8FA, 0xFF007AFF, null, "Фон",
+            "Градиенты и своя картинка") { openBackground() }
+        frame.body.addView(bgRow.view, rowLp())
+
+        val clockRow = row(GlyphView.CLOCK, 0xFFFF9F0A, 0xFFFF6A00, null, "Часы",
+            "Стиль, размер, цвет, прозрачность") { openClock() }
+        frame.body.addView(clockRow.view, rowLp())
 
         val home = row(GlyphView.HOME, 0xFFFF7A9C, 0xFFE0446E, null, "Сделать главным экраном",
             "Чтобы кнопка «Домой» открывала Rin Launcher") {
@@ -1024,5 +1037,561 @@ class LauncherActivity : Activity() {
         sysRow(GlyphView.GEAR, 0xFF9AA3B2, 0xFF5B6475, null, "Все настройки системы", "Открыть стандартные настройки", Settings.ACTION_SETTINGS)
 
         pushPanel(frame, null)
+    }
+
+    // ------------------------------------------------------------------ вспомогательное для окон выбора
+
+    private fun sectionHead(frame: PanelFrame, text: String) {
+        val h = label(this, text, 29, 3, true)
+        val lp = LinearLayout.LayoutParams(-2, -2)
+        lp.topMargin = Ui.px(14)
+        lp.bottomMargin = Ui.px(10)
+        lp.leftMargin = Ui.px(10)
+        frame.body.addView(h, lp)
+    }
+
+    private fun chipLp(): LinearLayout.LayoutParams {
+        val lp = LinearLayout.LayoutParams(-2, -2)
+        lp.leftMargin = Ui.px(10)
+        lp.bottomMargin = Ui.px(6)
+        return lp
+    }
+
+    /** Ряд вариантов: выбранный подсвечен, остальные можно выбрать пультом. */
+    private fun chips(names: List<String>, sel: Int, onPick: (Int) -> Unit): LinearLayout {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        val cells = ArrayList<FocusLayout>()
+        for (i in names.indices) {
+            val idx = i
+            val c = FocusLayout(this, Ui.pxf(22f), true, 1.05f, true)
+            c.gravity = Gravity.CENTER
+            c.setPadding(Ui.px(26), Ui.px(14), Ui.px(26), Ui.px(14))
+            c.addView(label(this, names[i], 27, 1, false))
+            c.marked = (i == sel)
+            c.setOnClickListener {
+                for (k in cells.indices) cells[k].marked = (k == idx)
+                onPick(idx)
+            }
+            cells.add(c)
+            val lp = LinearLayout.LayoutParams(-2, -2)
+            lp.rightMargin = Ui.px(12)
+            row.addView(c, lp)
+        }
+        return row
+    }
+
+    private fun colorChips(sel: Int, onPick: (Int) -> Unit): LinearLayout {
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        row.gravity = Gravity.CENTER_VERTICAL
+        val cells = ArrayList<FocusLayout>()
+        for (i in ClockOpts.colors.indices) {
+            val idx = i
+            val c = FocusLayout(this, Ui.pxf(50f), true, 1.12f, true)
+            c.gravity = Gravity.CENTER
+            c.setPadding(Ui.px(10), Ui.px(10), Ui.px(10), Ui.px(10))
+            c.addView(ColorDot(this, i), LinearLayout.LayoutParams(Ui.px(52), Ui.px(52)))
+            c.marked = (i == sel)
+            c.setOnClickListener {
+                for (k in cells.indices) cells[k].marked = (k == idx)
+                onPick(idx)
+            }
+            cells.add(c)
+            val lp = LinearLayout.LayoutParams(-2, -2)
+            lp.rightMargin = Ui.px(8)
+            row.addView(c, lp)
+        }
+        return row
+    }
+
+    // ------------------------------------------------------------------ часы
+
+    private fun clockLp(): FrameLayout.LayoutParams {
+        val g = when (prefs.clockPos) {
+            0 -> Gravity.START
+            1 -> Gravity.CENTER_HORIZONTAL
+            else -> Gravity.END
+        }
+        val lp = FrameLayout.LayoutParams(-2, -2, g or Gravity.TOP)
+        lp.leftMargin = Ui.px(96)
+        lp.rightMargin = Ui.px(96)
+        lp.topMargin = Ui.px(40)
+        return lp
+    }
+
+    /** Пересобрать часы и сдвинуть сетку приложений, чтобы большие часы ничего не закрывали. */
+    private fun relayoutClock(rebuild: Boolean) {
+        if (rebuild) clock.rebuild()
+        clock.layoutParams = clockLp()
+        val sw = resources.displayMetrics.widthPixels
+        clock.measure(
+            View.MeasureSpec.makeMeasureSpec(sw, View.MeasureSpec.AT_MOST),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+        )
+        var top = Ui.px(40) + clock.measuredHeight + Ui.px(16)
+        val minTop = Ui.px(150)
+        val maxTop = Ui.px(520)
+        if (top < minTop) top = minTop
+        if (top > maxTop) top = maxTop
+        val slp = scroll.layoutParams as FrameLayout.LayoutParams
+        slp.topMargin = top
+        scroll.layoutParams = slp
+    }
+
+    private fun openClock() {
+        val frame = PanelFrame(this, "Часы", "Часы видны сверху. Изменения применяются сразу",
+            Ui.px(1500), Ui.px(660), 0x22000000, true)
+
+        sectionHead(frame, "Стиль")
+        frame.body.addView(chips(ClockOpts.styleNames, prefs.clockStyle) { i ->
+            prefs.clockStyle = i
+            relayoutClock(true)
+        }, chipLp())
+
+        sectionHead(frame, "Размер")
+        frame.body.addView(chips(ClockOpts.sizeNames, prefs.clockSize) { i ->
+            prefs.clockSize = i
+            relayoutClock(true)
+        }, chipLp())
+
+        sectionHead(frame, "Прозрачность")
+        frame.body.addView(chips(ClockOpts.alphaNames, prefs.clockAlpha) { i ->
+            prefs.clockAlpha = i
+            clock.refreshStyle()
+        }, chipLp())
+
+        sectionHead(frame, "Цвет (первый — по теме, второй — акцент темы)")
+        frame.body.addView(colorChips(prefs.clockColor) { i ->
+            prefs.clockColor = i
+            clock.refreshStyle()
+        }, chipLp())
+
+        sectionHead(frame, "Положение")
+        frame.body.addView(chips(ClockOpts.posNames, prefs.clockPos) { i ->
+            prefs.clockPos = i
+            relayoutClock(true)
+        }, chipLp())
+
+        sectionHead(frame, "Дата")
+        frame.body.addView(chips(listOf("Показывать", "Скрыть"), if (prefs.clockDate) 0 else 1) { i ->
+            prefs.clockDate = (i == 0)
+            relayoutClock(true)
+        }, chipLp())
+
+        sectionHead(frame, "Формат времени")
+        frame.body.addView(chips(listOf("24 часа", "12 часов"), if (prefs.clock24) 0 else 1) { i ->
+            prefs.clock24 = (i == 0)
+            relayoutClock(true)
+        }, chipLp())
+
+        sectionHead(frame, "Начертание")
+        frame.body.addView(chips(listOf("Обычное", "Жирное"), if (prefs.clockBold) 1 else 0) { i ->
+            prefs.clockBold = (i == 1)
+            clock.refreshStyle()
+            relayoutClock(false)
+        }, chipLp())
+
+        pushPanel(frame, null)
+    }
+
+    // ------------------------------------------------------------------ фон
+
+    private fun afterBgChange() {
+        Style.restyle(root)
+        clock.refreshStyle()
+    }
+
+    private fun dimValue(): Float = when (prefs.bgDim) {
+        1 -> 0.2f
+        2 -> 0.4f
+        3 -> 0.6f
+        else -> 0f
+    }
+
+    private fun applyBackground(animate: Boolean) {
+        val anim = animate && prefs.animations
+        when (prefs.bgMode) {
+            1 -> {
+                val w = Walls.byId(prefs.wallId)
+                Skin.bgDark = w.dark
+                bg.setImage(null, 0f, false)
+                bg.setPalette(w.top, w.bottom, w.b1, w.b2, w.b3, w.dark, anim)
+                afterBgChange()
+            }
+            2 -> loadImageBackground(anim)
+            else -> {
+                Skin.bgDark = null
+                bg.setImage(null, 0f, false)
+                bg.setTheme(Skin.theme, anim)
+                afterBgChange()
+            }
+        }
+    }
+
+    private fun loadImageBackground(animate: Boolean) {
+        val blur = prefs.bgBlur
+        val dimF = dimValue()
+        Thread {
+            val b = WallStore.load(this, blur)
+            val lum = if (b != null) WallStore.luminance(b) * (1f - dimF) else 0f
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (b == null) {
+                    prefs.bgMode = 0
+                    applyBackground(false)
+                } else {
+                    Skin.bgDark = lum < 0.62f
+                    bg.setImage(b, dimF, animate)
+                    afterBgChange()
+                }
+            }
+        }.start()
+    }
+
+    private fun swatchOf(w: Wall): RinTheme = RinTheme(w.id, w.name, w.dark, w.top, w.bottom, w.b1, w.b2, w.b3, w.b1)
+
+    private fun bgCell(sw: RinTheme, name: String, selected: () -> Boolean, onPick: () -> Unit): FocusLayout {
+        val cell = FocusLayout(this, Ui.pxf(30f), true, 1.06f, false)
+        cell.orientation = LinearLayout.VERTICAL
+        cell.gravity = Gravity.CENTER_HORIZONTAL
+        cell.setPadding(Ui.px(10), Ui.px(12), Ui.px(10), Ui.px(8))
+        cell.addView(ThemeSwatch(this, sw, selected), LinearLayout.LayoutParams(Ui.px(230), Ui.px(124)))
+        val tv = label(this, name, 26, 1, false)
+        val tlp = LinearLayout.LayoutParams(-2, -2)
+        tlp.topMargin = Ui.px(10)
+        cell.addView(tv, tlp)
+        cell.setOnClickListener { onPick() }
+        return cell
+    }
+
+    private fun openBackground() {
+        val frame = PanelFrame(this, "Фон", "Градиенты или своя картинка. Изменения видно сразу",
+            Ui.px(1560), Ui.px(700), 0x22000000, true)
+
+        sectionHead(frame, "Градиенты")
+        val g = SimpleGrid(this, 5, Ui.px(270), Ui.px(196))
+        g.addView(bgCell(Skin.theme, "Как у темы", { prefs.bgMode == 0 }) {
+            prefs.bgMode = 0
+            applyBackground(true)
+            Style.restyle(frame.body)
+        })
+        for (w in Walls.all) {
+            val wall = w
+            g.addView(bgCell(swatchOf(wall), wall.name, { prefs.bgMode == 1 && prefs.wallId == wall.id }) {
+                prefs.bgMode = 1
+                prefs.wallId = wall.id
+                applyBackground(true)
+                Style.restyle(frame.body)
+            })
+        }
+        frame.body.addView(g, LinearLayout.LayoutParams(-1, -2))
+
+        sectionHead(frame, "Своя картинка")
+        val pick = row(GlyphView.WALL, 0xFF5AC8FA, 0xFF007AFF, null, "Выбрать из галереи",
+            "Фото и картинки, которые есть на приставке") { openGallery() }
+        frame.body.addView(pick.view, rowLp())
+
+        val files = row(GlyphView.STORAGE, 0xFF9AA3B2, 0xFF5B6475, null, "Выбрать через файловый менеджер",
+            "Если нужного файла нет в галерее") { pickWithSystem() }
+        frame.body.addView(files.view, rowLp())
+
+        if (WallStore.exists(this)) {
+            val clr = row(GlyphView.CLEAN, 0xFFFF7A9C, 0xFFE0446E, null, "Убрать свою картинку",
+                "Вернуться к градиенту") { }
+            clr.view.setOnClickListener {
+                WallStore.clear(this)
+                if (prefs.bgMode == 2) {
+                    prefs.bgMode = 0
+                    applyBackground(true)
+                }
+                frame.body.removeView(clr.view)
+                pick.view.requestFocus()
+                toast("Картинка удалена")
+            }
+            frame.body.addView(clr.view, rowLp())
+        }
+
+        sectionHead(frame, "Затемнение картинки")
+        frame.body.addView(chips(listOf("Нет", "20%", "40%", "60%"), prefs.bgDim) { i ->
+            prefs.bgDim = i
+            if (prefs.bgMode == 2) applyBackground(false)
+        }, chipLp())
+
+        sectionHead(frame, "Размытие картинки")
+        frame.body.addView(chips(listOf("Нет", "Слабое", "Сильное"), prefs.bgBlur) { i ->
+            prefs.bgBlur = i
+            if (prefs.bgMode == 2) applyBackground(false)
+        }, chipLp())
+
+        pushPanel(frame, null)
+    }
+
+    private fun galleryPermission(): String =
+        if (Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_IMAGES
+        else android.Manifest.permission.READ_EXTERNAL_STORAGE
+
+    private fun openGallery() {
+        if (checkSelfPermission(galleryPermission()) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(galleryPermission()), REQ_PERM)
+            return
+        }
+        showGallery()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_PERM) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                showGallery()
+            } else {
+                toast("Нет доступа к картинкам. Разрешите доступ или выберите через файловый менеджер")
+            }
+        }
+    }
+
+    private fun pickWithSystem() {
+        try {
+            val i = Intent(Intent.ACTION_GET_CONTENT)
+            i.type = "image/*"
+            i.addCategory(Intent.CATEGORY_OPENABLE)
+            startActivityForResult(i, REQ_PICK)
+        } catch (e: Exception) {
+            toast("На приставке нет файлового менеджера. Используйте «Выбрать из галереи»")
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_PICK && resultCode == RESULT_OK) {
+            val u = data?.data
+            if (u != null) importUri(u)
+        }
+    }
+
+    private fun importUri(uri: Uri) {
+        toast("Загружаю картинку…")
+        Thread {
+            val ok = WallStore.importFrom(this, uri)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (ok) {
+                    prefs.bgMode = 2
+                    applyBackground(true)
+                    toast("Фон обновлён")
+                } else {
+                    toast("Не удалось открыть эту картинку")
+                }
+            }
+        }.start()
+    }
+
+    private fun queryPictures(): List<Uri> {
+        val out = ArrayList<Uri>()
+        try {
+            val cur = contentResolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.Images.Media._ID),
+                null, null,
+                MediaStore.Images.Media.DATE_ADDED + " DESC"
+            )
+            if (cur != null) {
+                cur.use {
+                    while (it.moveToNext() && out.size < 160) {
+                        out.add(ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, it.getLong(0)))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+        }
+        return out
+    }
+
+    private fun decodeThumb(uri: Uri, target: Int): Bitmap? {
+        try {
+            val o = BitmapFactory.Options()
+            o.inJustDecodeBounds = true
+            val s1 = contentResolver.openInputStream(uri) ?: return null
+            s1.use { BitmapFactory.decodeStream(it, null, o) }
+            if (o.outWidth <= 0) return null
+            var sample = 1
+            while (o.outWidth / (sample * 2) >= target) sample *= 2
+            val o2 = BitmapFactory.Options()
+            o2.inSampleSize = sample
+            val s2 = contentResolver.openInputStream(uri) ?: return null
+            return s2.use { BitmapFactory.decodeStream(it, null, o2) }
+        } catch (e: Exception) {
+            return null
+        } catch (e: OutOfMemoryError) {
+            return null
+        }
+    }
+
+    private fun showGallery() {
+        val frame = PanelFrame(this, "Галерея", "Выберите картинку для фона", Ui.px(1500), Ui.px(900))
+        frame.body.addView(label(this, "Загрузка…", 30, 2, false))
+        val pool: ExecutorService = Executors.newFixedThreadPool(2)
+        frame.onClose = { pool.shutdownNow() }
+        pushPanel(frame, null)
+        Thread {
+            val uris = queryPictures()
+            runOnUiThread {
+                if (isDestroyed || pool.isShutdown) return@runOnUiThread
+                frame.body.removeAllViews()
+                if (uris.isEmpty()) {
+                    frame.body.addView(label(this,
+                        "Картинок не найдено. Скопируйте фото в папку Pictures или Download на приставке, либо выберите через файловый менеджер.",
+                        28, 2, false))
+                    return@runOnUiThread
+                }
+                val g = SimpleGrid(this, 4, Ui.px(340), Ui.px(214))
+                var first: View? = null
+                for (u in uris) {
+                    val uri = u
+                    val cell = FocusLayout(this, Ui.pxf(26f), true, 1.05f, false)
+                    cell.gravity = Gravity.CENTER
+                    cell.setPadding(Ui.px(10), Ui.px(10), Ui.px(10), Ui.px(10))
+                    val pv = PhotoView(this)
+                    cell.addView(pv, LinearLayout.LayoutParams(Ui.px(300), Ui.px(176)))
+                    cell.setOnClickListener {
+                        popPanel()
+                        importUri(uri)
+                    }
+                    g.addView(cell)
+                    if (first == null) first = cell
+                    pool.execute {
+                        val bmp = decodeThumb(uri, 420)
+                        if (bmp != null) {
+                            runOnUiThread {
+                                if (!isDestroyed) pv.bitmap = bmp
+                            }
+                        }
+                    }
+                }
+                frame.body.addView(g, LinearLayout.LayoutParams(-1, -2))
+                val f0 = first
+                if (f0 != null) f0.requestFocus()
+            }
+        }.start()
+    }
+
+    // ------------------------------------------------------------------ приложения на главном экране
+
+    private fun openHomeApps() {
+        val frame = PanelFrame(this, "Приложения на главном экране",
+            "Отметьте нужные. Остальные пропадут с экрана, но не удалятся", Ui.px(1500), Ui.px(930))
+        val allList = ArrayList<AppEntry>(apps)
+        val hidden = HashSet<String>(prefs.hidden)
+        val dots = HashMap<String, CheckDot>()
+
+        if (allList.isEmpty()) {
+            frame.body.addView(label(this, "Список приложений ещё загружается. Закройте окно и откройте снова", 28, 2, false))
+            pushPanel(frame, null)
+            return
+        }
+
+        val counter = label(this, "", 27, 3, true)
+        val clp = LinearLayout.LayoutParams(-2, -2)
+        clp.leftMargin = Ui.px(10)
+        clp.bottomMargin = Ui.px(12)
+        frame.body.addView(counter, clp)
+
+        fun refreshCount() {
+            var shown = 0
+            for (e in allList) {
+                if (!hidden.contains(e.pkg)) shown++
+            }
+            counter.text = "На экране: " + shown + " из " + allList.size
+        }
+
+        fun commit() {
+            prefs.hidden = HashSet<String>(hidden)
+            for (e in allList) {
+                val d = dots[e.pkg]
+                if (d != null) d.on = !hidden.contains(e.pkg)
+            }
+            refreshCount()
+        }
+
+        val actions = LinearLayout(this)
+        actions.orientation = LinearLayout.HORIZONTAL
+
+        fun action(title: String, onTap: () -> Unit) {
+            val b = FocusLayout(this, Ui.pxf(24f), true, 1.04f, true)
+            b.gravity = Gravity.CENTER
+            b.setPadding(Ui.px(26), Ui.px(16), Ui.px(26), Ui.px(16))
+            b.addView(label(this, title, 27, 3, true))
+            b.setOnClickListener {
+                onTap()
+                commit()
+            }
+            val lp = LinearLayout.LayoutParams(-2, -2)
+            lp.rightMargin = Ui.px(14)
+            actions.addView(b, lp)
+        }
+
+        action("Показать все") { hidden.clear() }
+        action("Скрыть системные") {
+            for (e in allList) {
+                if (e.system) hidden.add(e.pkg)
+            }
+        }
+        action("Скрыть все") {
+            for (e in allList) hidden.add(e.pkg)
+        }
+        val alp = LinearLayout.LayoutParams(-2, -2)
+        alp.bottomMargin = Ui.px(14)
+        frame.body.addView(actions, alp)
+
+        val small = Ui.px(64)
+        var first: View? = null
+        for (e in allList) {
+            val app = e
+            val line = FocusLayout(this, Ui.pxf(24f), true, 1.02f, true)
+            line.gravity = Gravity.CENTER_VERTICAL
+            line.setPadding(Ui.px(22), Ui.px(8), Ui.px(26), Ui.px(8))
+            val iv = SquircleView(this, small)
+            val big = app.bmp
+            iv.bitmap = if (big != null) Bitmap.createScaledBitmap(big, small, small, true) else null
+            line.addView(iv, LinearLayout.LayoutParams(iv.total, iv.total))
+
+            val col = LinearLayout(this)
+            col.orientation = LinearLayout.VERTICAL
+            val nm = label(this, app.label, 30, 1, true)
+            nm.maxLines = 1
+            nm.ellipsize = TextUtils.TruncateAt.END
+            col.addView(nm)
+            val sub = label(this, (if (app.system) "Системное · " else "") + app.pkg, 20, 2, false)
+            sub.maxLines = 1
+            sub.ellipsize = TextUtils.TruncateAt.END
+            col.addView(sub)
+            val colLp = LinearLayout.LayoutParams(0, -2, 1f)
+            colLp.leftMargin = Ui.px(16)
+            line.addView(col, colLp)
+
+            val dot = CheckDot(this)
+            dot.on = !hidden.contains(app.pkg)
+            dots[app.pkg] = dot
+            line.addView(dot, LinearLayout.LayoutParams(Ui.px(46), Ui.px(46)))
+
+            line.setOnClickListener {
+                if (hidden.contains(app.pkg)) {
+                    hidden.remove(app.pkg)
+                } else {
+                    hidden.add(app.pkg)
+                }
+                commit()
+            }
+            frame.body.addView(line, rowLp())
+            if (first == null) first = line
+        }
+        refreshCount()
+        frame.onClose = { populateGrid() }
+        pushPanel(frame, first)
+    }
+
+    companion object {
+        private const val REQ_PICK = 4711
+        private const val REQ_PERM = 4712
     }
 }

@@ -96,24 +96,33 @@ object Skin {
     var theme: RinTheme = Themes.all[0]
     var typeface: Typeface = Typeface.DEFAULT
 
+    /** Если выбран градиентный фон или картинка, светлый/тёмный текст определяет он, а не тема. */
+    var bgDark: Boolean? = null
+
+    val isDark: Boolean
+        get() = bgDark ?: theme.dark
+
     val text1: Int
-        get() = if (theme.dark) Color.WHITE else 0xFF1C1C1E.toInt()
+        get() = if (isDark) Color.WHITE else 0xFF1C1C1E.toInt()
     val text2: Int
-        get() = if (theme.dark) 0xB3FFFFFF.toInt() else 0x99000000.toInt()
+        get() = if (isDark) 0xB3FFFFFF.toInt() else 0x99000000.toInt()
     val accent: Int
         get() = theme.accent
     val glass: Int
-        get() = if (theme.dark) 0x30FFFFFF else 0xA6FFFFFF.toInt()
+        get() = if (isDark) 0x30FFFFFF else 0xA6FFFFFF.toInt()
     val glassStroke: Int
-        get() = if (theme.dark) 0x40FFFFFF else 0x22000000
+        get() = if (isDark) 0x40FFFFFF else 0x22000000
     val rowFill: Int
-        get() = if (theme.dark) 0x16FFFFFF else 0x0F000000
+        get() = if (isDark) 0x16FFFFFF else 0x0F000000
     val track: Int
-        get() = if (theme.dark) 0x33FFFFFF else 0x22000000
+        get() = if (isDark) 0x33FFFFFF else 0x22000000
     val panelFill: Int
-        get() = if (theme.dark) withAlpha(mixColor(theme.bottom, Color.BLACK, 0.55f), 0xF2) else 0xF4FFFFFF.toInt()
+        get() = if (isDark) {
+            if (theme.dark) withAlpha(mixColor(theme.bottom, Color.BLACK, 0.55f), 0xF2)
+            else withAlpha(mixColor(0xFF14161C.toInt(), theme.accent, 0.08f), 0xF2)
+        } else 0xF4FFFFFF.toInt()
     val border: Int
-        get() = if (theme.dark) 0x33FFFFFF else 0x22000000
+        get() = if (isDark) 0x33FFFFFF else 0x22000000
 }
 
 /** Роли текста: 1 основной, 2 второстепенный, 3 акцентный. +10 жирный, +100 не менять шрифт. */
@@ -188,4 +197,57 @@ class Prefs(ctx: Context) {
     var hidden: Set<String>
         get() = HashSet<String>(sp.getStringSet("hidden", emptySet<String>()) ?: emptySet<String>())
         set(v) { sp.edit().putStringSet("hidden", HashSet<String>(v)).apply() }
+
+    /** Фон: 0 как у темы, 1 готовый градиент, 2 своя картинка */
+    var bgMode: Int
+        get() = sp.getInt("bg_mode", 0)
+        set(v) { sp.edit().putInt("bg_mode", v).apply() }
+
+    var wallId: String
+        get() = sp.getString("wall_id", "sunset") ?: "sunset"
+        set(v) { sp.edit().putString("wall_id", v).apply() }
+
+    /** 0 нет, 1 20%, 2 40%, 3 60% */
+    var bgDim: Int
+        get() = sp.getInt("bg_dim", 1)
+        set(v) { sp.edit().putInt("bg_dim", v).apply() }
+
+    /** 0 нет, 1 слабое, 2 сильное */
+    var bgBlur: Int
+        get() = sp.getInt("bg_blur", 0)
+        set(v) { sp.edit().putInt("bg_blur", v).apply() }
+
+    /** 0 классика, 1 экран блокировки, 2 компакт, 3 столбцом, 4 аналоговые */
+    var clockStyle: Int
+        get() = sp.getInt("clock_style", 0)
+        set(v) { sp.edit().putInt("clock_style", v).apply() }
+
+    var clockSize: Int
+        get() = sp.getInt("clock_size", 2)
+        set(v) { sp.edit().putInt("clock_size", v).apply() }
+
+    var clockAlpha: Int
+        get() = sp.getInt("clock_alpha", 0)
+        set(v) { sp.edit().putInt("clock_alpha", v).apply() }
+
+    var clockColor: Int
+        get() = sp.getInt("clock_color", 0)
+        set(v) { sp.edit().putInt("clock_color", v).apply() }
+
+    /** 0 слева, 1 по центру, 2 справа */
+    var clockPos: Int
+        get() = sp.getInt("clock_pos", 0)
+        set(v) { sp.edit().putInt("clock_pos", v).apply() }
+
+    var clockDate: Boolean
+        get() = sp.getBoolean("clock_date", true)
+        set(v) { sp.edit().putBoolean("clock_date", v).apply() }
+
+    var clock24: Boolean
+        get() = sp.getBoolean("clock_24", true)
+        set(v) { sp.edit().putBoolean("clock_24", v).apply() }
+
+    var clockBold: Boolean
+        get() = sp.getBoolean("clock_bold", false)
+        set(v) { sp.edit().putBoolean("clock_bold", v).apply() }
 }
